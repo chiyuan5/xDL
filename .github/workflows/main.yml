@@ -1,0 +1,93 @@
+name: build-xdl-static
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "xdl-static-*"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        abi: [armeabi-v7a, arm64-v8a, x86, x86_64]
+
+    steps:
+      - name: Checkout xDL
+        uses: actions/checkout@v4
+        with:
+          repository: hexhacking/xDL
+          ref: master
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: Install Android NDK
+        run: |
+          set -euxo pipefail
+          sdkmanager --install "ndk;23.2.8568313"
+
+      - name: Generate CMakeLists.txt for static build
+        run: |
+          set -euxo pipefail
+          cat > CMakeLists.txt <<'EOF'
+          cmake_minimum_required(VERSION 3.18)
+          project(xdl_static C)
+
+          file(GLOB XDL_SOURCES CONFIGURE_DEPENDS
+            "${CMAKE_CURRENT_SOURCE_DIR}/xdl/src/main/cpp/*.c"
+          )
+
+          if(NOT XDL_SOURCES)
+            message(FATAL_ERROR "No C source files found under xdl/src/main/cpp")
+          endif()
+
+          add_library(xdl STATIC ${XDL_SOURCES})
+
+          target_include_directories(xdl PUBLIC
+            "${CMAKE_CURRENT_SOURCE_DIR}/xdl/src/main/cpp/include"
+          )
+
+          set_target_properties(xdl PROPERTIES
+            OUTPUT_NAME xdl
+          )
+          EOF
+
+      - name: Configure and build
+        env:
+          ABI: ${{ matrix.abi }}
+          NDK_VERSION: 23.2.8568313
+        run: |
+          set -euxo pipefail
+
+          TOOLCHAIN="$ANDROID_SDK_ROOT/ndk/$NDK_VERSION/build/cmake/android.toolchain.cmake"
+
+          cmake -S . -B "build/$ABI" \
+            -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN" \
+            -DANDROID_ABI="$ABI" \
+            -DANDROID_PLATFORM=android-16 \
+            -DCMAKE_BUILD_TYPE=Release
+
+          cmake --build "build/$ABI" --target xdl --parallel
+
+      - name: Package artifact
+        env:
+          ABI: ${{ matrix.abi }}
+        run: |
+          set -euxo pipefail
+
+          mkdir -p "out/$ABI/include"
+          cp "build/$ABI/libxdl.a" "out/$ABI/"
+          cp -r xdl/src/main/cpp/include/. "out/$ABI/include/"
+
+          cd out
+          tar -czf "xdl-static-$ABI.tar.gz" "$ABI"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: xdl-static-${{ matrix.abi }}
+          path: out/xdl-static-${{ matrix.abi }}.tar.gz
